@@ -8,7 +8,15 @@ from typing import Literal
 import re
 
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
-from playwright_stealth import StealthConfig, stealth_sync
+try:
+    # playwright-stealth v1 API
+    from playwright_stealth import StealthConfig, stealth_sync
+except ImportError:
+    # playwright-stealth v2 API
+    from playwright_stealth import Stealth as _Stealth
+    StealthConfig = None
+    def stealth_sync(page, config=None):
+        _Stealth().apply_stealth_sync(page)
 import csv
 from enum import Enum
 
@@ -63,11 +71,14 @@ class FidelityAutomation:
         self.save_state: bool = save_state
         self.debug = debug
         self.profile_path: str = profile_path
-        self.stealth_config = StealthConfig(
-            navigator_languages=False,
-            navigator_user_agent=False,
-            navigator_vendor=False,
-        )
+        if StealthConfig is not None:
+            self.stealth_config = StealthConfig(
+                navigator_languages=False,
+                navigator_user_agent=False,
+                navigator_vendor=False,
+            )
+        else:
+            self.stealth_config = None
         self.getDriver()
         # Some class variables
         self.account_dict: dict = {}

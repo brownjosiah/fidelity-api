@@ -1,5 +1,13 @@
 *.sh
 *.bat
+
+# Fidelity session data (contains auth cookies, account info)
+Fidelity_*.json
+api_captures/
+options_chain_selectors.json
+options_chain_screenshot.png
+page_structure.json
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
