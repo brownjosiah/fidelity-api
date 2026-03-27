@@ -753,6 +753,83 @@ class FidelityAPIClient:
 
         return {"orderDetails": order}
 
+    def preview_option_order(
+        self,
+        legs: list,
+        limit_price: float,
+        strategy_type: str = "CD",
+        debit_credit: str = "CR",
+        time_in_force: str = "D",
+        acct_num: str = None,
+    ) -> dict:
+        """Preview a multi-leg options order without placing it.
+
+        Calls mlo-verify to validate the order and return cost estimates,
+        warnings, and a confNum (used by place_option_order to submit).
+
+        Parameters
+        ----------
+        legs : list[OptionLeg]
+            Order legs (1-4 legs).
+        limit_price : float
+            Limit price for the order.
+        strategy_type : str
+            "CD" (Condor), "SP" (Spread), "ST" (Straddle), "SG" (Strangle).
+        debit_credit : str
+            "CR" (Credit) or "DB" (Debit).
+        time_in_force : str
+            "D" (Day) or "GTC" (Good Till Cancel).
+        acct_num : str, optional
+            Account number. Uses default account if not provided.
+
+        Returns
+        -------
+        dict with keys:
+            verifyDetails: {acctNum, orderConfirmDetail: {confNum, ...}, tifCode, ...}
+            messages: list of {message, detail, type} dicts (warnings/errors)
+        """
+        body = self._build_order_payload(
+            legs=legs,
+            limit_price=limit_price,
+            strategy_type=strategy_type,
+            debit_credit=debit_credit,
+            time_in_force=time_in_force,
+            req_type_code="N",
+            acct_num=acct_num,
+        )
+
+        url = BASE_URL + ENDPOINTS["mlo_verify"]
+        headers = self._trade_headers()
+        resp = self.session.post(url, json=body, headers=headers)
+        resp.raise_for_status()
+        return resp.json()
+
+    def get_order_status(self, order_id: str, acct_num: str = None) -> dict:
+        """Check the status of an options order.
+
+        Parameters
+        ----------
+        order_id : str
+            The confirmation number (confNum) of the order.
+        acct_num : str, optional
+            Account number. Uses default account if not provided.
+
+        Returns
+        -------
+        dict with key:
+            orderDetails: list of per-leg dicts with statusCode, statusDesc,
+            decodeStatus, cancelableInd, replaceableInd, limitPrice, strategyName,
+            and orderLegInfoDetail.
+        """
+        acct = self.get_account(acct_num)
+
+        url = BASE_URL + ENDPOINTS["trade_orders"]
+        body = {"orderId": order_id, "acctNum": acct.acct_num}
+        headers = self._trade_headers()
+        resp = self.session.post(url, json=body, headers=headers)
+        resp.raise_for_status()
+        return resp.json()
+
     # --- Convenience methods for iron condor trading ---
 
     def get_ic_chain_data(
