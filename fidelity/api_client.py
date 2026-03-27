@@ -830,6 +830,145 @@ class FidelityAPIClient:
         resp.raise_for_status()
         return resp.json()
 
+    def get_net_debit_credit(
+        self,
+        legs: list,
+        limit_price: float = None,
+        strategy: str = "Iron Condor",
+        strategy_type: str = "CD",
+        debit_credit: str = "CR",
+        price_type: str = "L",
+        acct_num: str = None,
+    ) -> dict:
+        """Calculate net bid/ask/mid and estimated commissions for a set of legs.
+
+        Fetches current quotes for each leg automatically to populate bid/ask.
+
+        Parameters
+        ----------
+        legs : list[OptionLeg]
+            Order legs (1-4 legs).
+        limit_price : float, optional
+            Limit price. Required when price_type="L".
+        strategy : str
+            Human-readable strategy name (e.g., "Iron Condor", "Spread").
+        strategy_type : str
+            Strategy code: "CD", "SP", "ST", "SG".
+        debit_credit : str or None
+            "CR" or "DB". Pass None to omit (e.g., for initial mid-price calc).
+        price_type : str
+            "L" (Limit) or "M" (Mid/Market).
+        acct_num : str, optional
+
+        Returns
+        -------
+        dict with keys: acctNum, netBid, netAsk, mid, estComm, totalCost (str),
+        gcd, netDebitOrCredit.
+        """
+        acct = self.get_account(acct_num)
+        acct_type_code = "M" if acct.is_margin else "C"
+
+        # Fetch current quotes for bid/ask
+        # Trade-options quotes endpoint requires dash-prefixed symbols
+        symbols = [f"-{leg.symbol}" for leg in legs]
+        quotes_url = BASE_URL + ENDPOINTS["trade_quotes"]
+        quotes_headers = self._trade_headers()
+        quotes_resp = self.session.post(
+            quotes_url, json={"symbols": symbols}, headers=quotes_headers
+        )
+        quotes_resp.raise_for_status()
+        quotes_data = quotes_resp.json()
+
+        # Build symbol -> {bid, ask} lookup (response strips the dash)
+        quote_lookup = {}
+        for q in quotes_data.get("quotes", []):
+            sym = q.get("symbol", "").lstrip("-")
+            quote_lookup[sym] = {
+                "bid": str(q.get("bid", "0")),
+                "ask": str(q.get("ask", "0")),
+            }
+
+        body = {
+            "numOfLegs": str(len(legs)),
+            "acctNum": acct.acct_num,
+            "acctTypeCode": acct_type_code,
+            "dbCrEvenCode": debit_credit,
+            "strategy": strategy,
+            "strategyType": strategy_type,
+            "priceTypeCode": price_type,
+        }
+
+        for i, leg in enumerate(legs, 1):
+            q = quote_lookup.get(leg.symbol, {"bid": "0", "ask": "0"})
+            body[f"action{i}"] = leg.action
+            body[f"bid{i}"] = q["bid"]
+            body[f"ask{i}"] = q["ask"]
+            body[f"leg{i}"] = {
+                "orderAction": _action_to_order_action(leg.action, leg.symbol),
+                "qty": leg.quantity,
+                "symbol": leg.symbol,
+                "optionType": leg.option_type,
+            }
+
+        if price_type == "L" and limit_price is not None:
+            body["limitPrice"] = f"{limit_price:.2f}"
+
+        url = BASE_URL + ENDPOINTS["net_debit_credit"]
+        headers = self._trade_headers()
+        resp = self.session.post(url, json=body, headers=headers)
+        resp.raise_for_status()
+        return resp.json()
+
+    def get_max_gain_loss(
+        self,
+        legs: list,
+        underlying_symbol: str = ".SPX",
+        strategy_type: str = "CD",
+        limit_price: float = 0.0,
+    ) -> dict:
+        """Calculate max gain, max loss, and breakeven for a strategy.
+
+        Parameters
+        ----------
+        legs : list[OptionLeg]
+        underlying_symbol : str
+            Underlying index/stock symbol (e.g., ".SPX").
+        strategy_type : str
+            Strategy code: "CD", "SP", "ST", "SG".
+        limit_price : float
+            Net limit price (used for the first leg's price field).
+
+        Returns
+        -------
+        dict with keys: maxGain, maxLoss, maxGainNumber, maxLossNumber,
+        breakEvenPoint, containsCloseAction.
+        """
+        leg_details = []
+        for i, leg in enumerate(legs):
+            action_long = ACTION_TO_LONG_FORM.get(leg.action, leg.action)
+            # First leg gets the negative limit price, rest get "0.00"
+            price = f"-{limit_price:.2f}" if i == 0 else "0.00"
+            # Sells have negative qty
+            qty = -leg.quantity if leg.action.startswith("S") else leg.quantity
+            leg_details.append({
+                "symbol": leg.symbol,
+                "orderActionCode": action_long,
+                "price": price,
+                "qty": qty,
+            })
+
+        body = {
+            "underlyingSymbol": underlying_symbol,
+            "legDetails": leg_details,
+            "strategyType": strategy_type,
+        }
+
+        url = BASE_URL + ENDPOINTS["max_gain_loss"]
+        headers = self._trade_headers()
+        resp = self.session.post(url, json=body, headers=headers)
+        resp.raise_for_status()
+        return resp.json()
+
     # --- Convenience methods for iron condor trading ---
 
     def get_ic_chain_data(
