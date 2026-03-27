@@ -969,6 +969,159 @@ class FidelityAPIClient:
         resp.raise_for_status()
         return resp.json()
 
+    def place_option_order(
+        self,
+        legs: list,
+        limit_price: float,
+        strategy_type: str = "CD",
+        debit_credit: str = "CR",
+        time_in_force: str = "D",
+        acct_num: str = None,
+        dry_run: bool = True,
+    ) -> dict:
+        """Preview and optionally place a multi-leg options order.
+
+        Parameters
+        ----------
+        legs : list[OptionLeg]
+            Order legs (1-4 legs).
+        limit_price : float
+            Limit price for the order.
+        strategy_type : str
+            "CD" (Condor), "SP" (Spread), "ST" (Straddle), "SG" (Strangle).
+        debit_credit : str
+            "CR" (Credit) or "DB" (Debit).
+        time_in_force : str
+            "D" (Day) or "GTC" (Good Till Cancel).
+        acct_num : str, optional
+        dry_run : bool
+            If True (default), only previews the order. If False, places it.
+
+        Returns
+        -------
+        dict: Preview result (if dry_run) or confirmation result (if live).
+            Preview has keys: verifyDetails, messages
+            Confirm has keys: confirmDetails, messages
+        """
+        # Phase 1: Preview
+        preview = self.preview_option_order(
+            legs=legs,
+            limit_price=limit_price,
+            strategy_type=strategy_type,
+            debit_credit=debit_credit,
+            time_in_force=time_in_force,
+            acct_num=acct_num,
+        )
+
+        if dry_run:
+            return preview
+
+        # Check for errors in preview
+        messages = preview.get("messages", [])
+        errors = [m for m in messages if m.get("type") == "error"]
+        if errors:
+            raise ValueError(
+                f"Order preview failed: {errors[0].get('detail', errors[0].get('message'))}"
+            )
+
+        # Phase 2: Confirm — extract confNum and re-send with reqTypeCode="P"
+        conf_num = preview["verifyDetails"]["orderConfirmDetail"]["confNum"]
+
+        body = self._build_order_payload(
+            legs=legs,
+            limit_price=limit_price,
+            strategy_type=strategy_type,
+            debit_credit=debit_credit,
+            time_in_force=time_in_force,
+            req_type_code="P",
+            acct_num=acct_num,
+            conf_num=conf_num,
+        )
+
+        url = BASE_URL + ENDPOINTS["mlo_confirm"]
+        headers = self._trade_headers()
+        resp = self.session.post(url, json=body, headers=headers)
+        resp.raise_for_status()
+        return resp.json()
+
+    def replace_option_order(
+        self,
+        original_order_id: str,
+        legs: list,
+        limit_price: float,
+        strategy_type: str = "CD",
+        debit_credit: str = "CR",
+        time_in_force: str = "D",
+        acct_num: str = None,
+        dry_run: bool = True,
+    ) -> dict:
+        """Preview and optionally replace an existing open options order.
+
+        Parameters
+        ----------
+        original_order_id : str
+            The confNum of the order to replace.
+        legs : list[OptionLeg]
+            Order legs (same symbols as original, new price/qty).
+        limit_price : float
+            New limit price.
+        strategy_type, debit_credit, time_in_force, acct_num : same as place.
+        dry_run : bool
+            If True (default), only previews. If False, executes replacement.
+
+        Returns
+        -------
+        dict: Preview result (if dry_run) or confirmation result (if live).
+        """
+        # Phase 1: Verify replace
+        body = self._build_order_payload(
+            legs=legs,
+            limit_price=limit_price,
+            strategy_type=strategy_type,
+            debit_credit=debit_credit,
+            time_in_force=time_in_force,
+            req_type_code="N",
+            acct_num=acct_num,
+            original_order_id=original_order_id,
+        )
+
+        url = BASE_URL + ENDPOINTS["mlo_verify_replace"]
+        headers = self._trade_headers()
+        resp = self.session.post(url, json=body, headers=headers)
+        resp.raise_for_status()
+        preview = resp.json()
+
+        if dry_run:
+            return preview
+
+        # Check for errors
+        messages = preview.get("messages", [])
+        errors = [m for m in messages if m.get("type") == "error"]
+        if errors:
+            raise ValueError(
+                f"Replace preview failed: {errors[0].get('detail', errors[0].get('message'))}"
+            )
+
+        # Phase 2: Confirm replace
+        conf_num = preview["verifyDetails"]["orderConfirmDetail"]["confNum"]
+
+        confirm_body = self._build_order_payload(
+            legs=legs,
+            limit_price=limit_price,
+            strategy_type=strategy_type,
+            debit_credit=debit_credit,
+            time_in_force=time_in_force,
+            req_type_code="P",
+            acct_num=acct_num,
+            conf_num=conf_num,
+            original_order_id=original_order_id,
+        )
+
+        url = BASE_URL + ENDPOINTS["mlo_confirm_replace"]
+        resp = self.session.post(url, json=confirm_body, headers=headers)
+        resp.raise_for_status()
+        return resp.json()
+
     # --- Convenience methods for iron condor trading ---
 
     def get_ic_chain_data(
