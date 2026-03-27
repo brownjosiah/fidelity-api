@@ -253,30 +253,27 @@ class FidelityAPIClient:
         if self._accounts:
             return self._accounts
 
-        url = BASE_URL + ENDPOINTS["account_context"]
-        resp = self.session.post(url, json={})
+        url = BASE_URL + ENDPOINTS["trade_account_fusion"]
+        headers = self._trade_headers()
+        resp = self.session.post(url, json={}, headers=headers)
         resp.raise_for_status()
         data = resp.json()
 
         accounts = []
-        for acct in data.get("acctDetails", []):
+        for acct in data:
+            details = acct.get("accountDetails", {})
             info = AccountInfo(
                 acct_num=acct.get("acctNum", ""),
-                acct_type=acct.get("acctType", ""),
-                acct_sub_type=acct.get("acctSubType", ""),
-                acct_sub_type_desc=acct.get("acctSubTypeDesc", ""),
-                name=acct.get("preferenceDetail", {}).get("acctNickName", ""),
-                reg_type_desc=acct.get("acctSubTypeDesc", ""),
+                acct_type=details.get("acctType", ""),
+                acct_sub_type=details.get("acctSubType", ""),
+                acct_sub_type_desc=details.get("acctSubTypeDesc", ""),
+                name=details.get("name", ""),
+                reg_type_desc=details.get("regTypeDesc", ""),
+                option_level=acct.get("optionLevel", 0),
+                is_margin=acct.get("isMarginEstb", False),
+                is_option=acct.get("isOptionEstb", False),
+                is_retirement=details.get("isRetirement", False),
             )
-
-            # Check for trading attributes
-            trade_detail = acct.get("acctTradeAttrDetail", {})
-            if trade_detail:
-                info.option_level = trade_detail.get("optionLevel", 0)
-                info.is_margin = trade_detail.get("mrgnEstb", False)
-                info.is_option = trade_detail.get("optionEstb", False)
-
-            info.is_retirement = acct.get("acctType", "") in ("IRA", "Roth IRA", "401k")
             accounts.append(info)
 
         self._accounts = accounts
