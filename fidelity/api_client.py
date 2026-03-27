@@ -330,7 +330,14 @@ class FidelityAPIClient:
         data = resp.json()
 
         for quote_item in data.get("quoteResponse", []):
-            if quote_item.get("status") == "0":  # 0 = success
+            status = quote_item.get("status")
+            # API returns status as either "0" (string) or {"errorCode": 0} (dict)
+            is_ok = (
+                status == "0"
+                or status == 0
+                or (isinstance(status, dict) and status.get("errorCode") == 0)
+            )
+            if is_ok:
                 return quote_item.get("quoteData", {})
 
         return {}
