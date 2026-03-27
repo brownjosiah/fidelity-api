@@ -220,6 +220,167 @@ def test_ic_chain(client: FidelityAPIClient):
         return False
 
 
+def _build_test_ic_legs(client):
+    """Build a 0DTE iron condor ~20 pts OTM for testing. Returns (legs, spx) or (None, None)."""
+    from fidelity.api_client import OptionLeg
+    spx = client.get_spx_price()
+    if not spx:
+        return None, None
+    exp = client.get_0dte_expiration(".SPX")
+    if not exp:
+        return None, None
+
+    lower_put = int(spx - 20) // 5 * 5
+    upper_put = lower_put + 5
+    lower_call = int(spx + 20) // 5 * 5
+    upper_call = lower_call + 5
+
+    parts = exp.split("/")
+    date_str = f"{parts[2][2:]}{parts[0].zfill(2)}{parts[1].zfill(2)}"
+
+    legs = [
+        OptionLeg(symbol=f"SPXW{date_str}P{lower_put}", action="BO", quantity=1),
+        OptionLeg(symbol=f"SPXW{date_str}P{upper_put}", action="SO", quantity=1),
+        OptionLeg(symbol=f"SPXW{date_str}C{lower_call}", action="SO", quantity=1),
+        OptionLeg(symbol=f"SPXW{date_str}C{upper_call}", action="BO", quantity=1),
+    ]
+    return legs, spx
+
+
+def test_preview_option_order(client: FidelityAPIClient):
+    """Test 11: Preview an iron condor order (read-only, no placement)."""
+    print("\n--- Test: Preview Option Order (IC) ---")
+    try:
+        legs, spx = _build_test_ic_legs(client)
+        if not legs:
+            print("  SKIPPED: Could not build IC legs (no SPX price or 0DTE)")
+            return False
+        print(f"  SPX: {spx}")
+        print(f"  Legs: {[l.symbol for l in legs]}")
+
+        result = client.preview_option_order(
+            legs=legs,
+            limit_price=2.00,
+            strategy_type="CD",
+            debit_credit="CR",
+        )
+
+        verify = result.get("verifyDetails", {})
+        conf = verify.get("orderConfirmDetail", {})
+        print(f"  confNum: {conf.get('confNum', 'N/A')}")
+        print(f"  Strategy: {conf.get('strategy', 'N/A')}")
+
+        net_vals = conf.get("orderDetail", {}).get("netValues", {})
+        print(f"  Net Bid: {net_vals.get('netBid', {}).get('value', 'N/A')}")
+        print(f"  Net Ask: {net_vals.get('netAsk', {}).get('value', 'N/A')}")
+        print(f"  Net Mid: {net_vals.get('netMid', {}).get('value', 'N/A')}")
+        print(f"  Commission: {net_vals.get('netCommission', 'N/A')}")
+
+        messages = result.get("messages", [])
+        warnings = [m for m in messages if m.get("type") == "warning"]
+        errors = [m for m in messages if m.get("type") == "error"]
+        print(f"  Warnings: {len(warnings)}, Errors: {len(errors)}")
+
+        return "confNum" in str(conf)
+    except Exception as e:
+        print(f"  FAILED: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+
+
+def test_net_debit_credit(client: FidelityAPIClient):
+    """Test 12: Calculate net debit/credit for an iron condor."""
+    print("\n--- Test: Net Debit/Credit ---")
+    try:
+        legs, spx = _build_test_ic_legs(client)
+        if not legs:
+            print("  SKIPPED: Could not build IC legs")
+            return False
+
+        result = client.get_net_debit_credit(
+            legs=legs,
+            limit_price=2.00,
+            strategy="Iron Condor",
+            strategy_type="CD",
+            debit_credit="CR",
+        )
+
+        print(f"  Net Bid: {result.get('netBid', 'N/A')}")
+        print(f"  Net Ask: {result.get('netAsk', 'N/A')}")
+        print(f"  Mid: {result.get('mid', 'N/A')}")
+        print(f"  Est Commission: {result.get('estComm', 'N/A')}")
+        print(f"  Total Cost: {result.get('totalCost', 'N/A')}")
+        print(f"  Net D/C: {result.get('netDebitOrCredit', 'N/A')}")
+
+        return "netBid" in result
+    except Exception as e:
+        print(f"  FAILED: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+
+
+def test_max_gain_loss(client: FidelityAPIClient):
+    """Test 13: Calculate max gain/loss for an iron condor."""
+    print("\n--- Test: Max Gain/Loss ---")
+    try:
+        legs, spx = _build_test_ic_legs(client)
+        if not legs:
+            print("  SKIPPED: Could not build IC legs")
+            return False
+
+        result = client.get_max_gain_loss(
+            legs=legs,
+            underlying_symbol=".SPX",
+            strategy_type="CD",
+            limit_price=2.00,
+        )
+
+        print(f"  Max Gain: {result.get('maxGain', 'N/A')}")
+        print(f"  Max Loss: {result.get('maxLoss', 'N/A')}")
+        print(f"  Breakeven: {result.get('breakEvenPoint', 'N/A')}")
+
+        return "maxGain" in result
+    except Exception as e:
+        print(f"  FAILED: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+
+
+def test_place_option_order_dry_run(client: FidelityAPIClient):
+    """Test 14: Dry-run place_option_order (preview only, no real order)."""
+    print("\n--- Test: Place Option Order (dry_run=True) ---")
+    try:
+        legs, spx = _build_test_ic_legs(client)
+        if not legs:
+            print("  SKIPPED: Could not build IC legs")
+            return False
+
+        result = client.place_option_order(
+            legs=legs,
+            limit_price=2.00,
+            strategy_type="CD",
+            debit_credit="CR",
+            dry_run=True,  # SAFE: preview only
+        )
+
+        # Should return the same as preview_option_order
+        verify = result.get("verifyDetails", {})
+        conf = verify.get("orderConfirmDetail", {})
+        print(f"  confNum: {conf.get('confNum', 'N/A')}")
+        print(f"  Strategy: {conf.get('strategy', 'N/A')}")
+        print(f"  (dry_run=True, no order placed)")
+
+        return "verifyDetails" in result
+    except Exception as e:
+        print(f"  FAILED: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+
+
 def main():
     print("=" * 60)
     print("  FIDELITY API CLIENT VALIDATION")
@@ -249,6 +410,10 @@ def main():
         ("balances", test_balances),
         ("positions", test_positions),
         ("ic_chain", test_ic_chain),
+        ("preview_order", test_preview_option_order),
+        ("net_debit_credit", test_net_debit_credit),
+        ("max_gain_loss", test_max_gain_loss),
+        ("place_order_dry", test_place_option_order_dry_run),
     ]
 
     for name, test_fn in tests:
