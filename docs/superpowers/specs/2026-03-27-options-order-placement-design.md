@@ -41,12 +41,16 @@ Replace orders follow the same pattern with `mlo-verify-replace` / `mlo-confirm-
 
 | Code | Meaning |
 |---|---|
-| `BO` | Buy to Open |
-| `SO` | Sell to Open |
-| `BC` | Buy to Close |
-| `SC` | Sell to Close |
+| `BO` | Buy (direction only) |
+| `SO` | Sell (direction only) |
 
-**Response `orderActionCode` values** (returned by server — direction + option type, NOT open/close):
+Open vs close is NOT controlled by the action code. It is controlled by the `type` field on each leg:
+- `type: "O"` = Open position
+- `type: "C"` = Close position
+
+For close orders, also use `strategyType: "CU"` (close/unwind) instead of `"CD"` (condor), and order legs by **descending strike**.
+
+**Response `orderActionCode` values** (returned by server — direction + option type):
 
 | Code | Meaning |
 |---|---|
@@ -54,8 +58,6 @@ Replace orders follow the same pattern with `mlo-verify-replace` / `mlo-confirm-
 | `SP` | Sell Put |
 | `BC` | Buy Call |
 | `SC` | Sell Call |
-
-Note: `BC`/`SC` appear in both contexts with **different meanings**. In request payloads they mean Buy/Sell to Close. In responses they mean Buy/Sell Call. The server derives the response code from the combination of buy/sell + the option's put/call type.
 
 **Long-form action codes** (used by `max-gain-loss` endpoint):
 
@@ -72,7 +74,8 @@ Note: `BC`/`SC` appear in both contexts with **different meanings**. In request 
 
 | Code | Strategy |
 |---|---|
-| `CD` | Condor / Iron Condor |
+| `CD` | Condor / Iron Condor (open) |
+| `CU` | Close / Unwind (close existing position) |
 | `SP` | Spread (vertical) |
 | `ST` | Straddle |
 | `SG` | Strangle |

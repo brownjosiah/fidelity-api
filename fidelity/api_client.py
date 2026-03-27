@@ -126,9 +126,9 @@ class AccountInfo:
 class OptionLeg:
     """A single leg of a multi-leg options order."""
     symbol: str      # OCC symbol e.g. "SPXW260327P6375"
-    action: str      # "BO" (Buy Open), "SO" (Sell Open), "BC" (Buy Close), "SC" (Sell Close)
+    action: str      # "BO" (Buy), "SO" (Sell) — direction only
     quantity: int    # number of contracts
-    option_type: str = "O"  # "O" for options
+    option_type: str = "O"  # "O" for open, "C" for close
 
 
 class FidelityAPIClient:
@@ -1039,6 +1039,95 @@ class FidelityAPIClient:
             limit_price=limit_price,
             strategy_type=strategy_type,
             debit_credit=debit_credit,
+            time_in_force=time_in_force,
+            req_type_code="P",
+            acct_num=acct_num,
+            conf_num=conf_num,
+        )
+
+        url = BASE_URL + ENDPOINTS["mlo_confirm"]
+        headers = self._trade_headers()
+        resp = self.session.post(url, json=body, headers=headers)
+        resp.raise_for_status()
+        return resp.json()
+
+    def close_option_order(
+        self,
+        open_legs: list,
+        limit_price: float,
+        time_in_force: str = "D",
+        acct_num: str = None,
+        dry_run: bool = True,
+    ) -> dict:
+        """Close an existing multi-leg options position.
+
+        Automatically reverses the open legs: flips BO<->SO actions,
+        sets type="C" (close), uses strategyType="CU" (close/unwind),
+        and orders legs by descending strike (as Fidelity requires for close).
+
+        Parameters
+        ----------
+        open_legs : list[OptionLeg]
+            The original legs used to open the position (with action BO/SO
+            and option_type "O"). This method will reverse them.
+        limit_price : float
+            Limit price for the close order (debit).
+        time_in_force : str
+            "D" (Day) or "GTC" (Good Till Cancel).
+        acct_num : str, optional
+        dry_run : bool
+            If True (default), only previews. If False, places the close.
+
+        Returns
+        -------
+        dict: Preview result (if dry_run) or confirmation result (if live).
+        """
+        # Reverse the legs: flip BO<->SO, set type="C"
+        close_legs = []
+        for leg in open_legs:
+            reverse_action = "SO" if leg.action == "BO" else "BO"
+            close_legs.append(OptionLeg(
+                symbol=leg.symbol,
+                action=reverse_action,
+                quantity=leg.quantity,
+                option_type="C",  # Close
+            ))
+
+        # Sort by descending strike (Fidelity requires this for close orders)
+        # Extract strike from OCC symbol: digits after P or C at end
+        def _strike_from_symbol(sym):
+            match = re.search(r'[PC](\d+)$', sym)
+            return int(match.group(1)) if match else 0
+
+        close_legs.sort(key=lambda l: _strike_from_symbol(l.symbol), reverse=True)
+
+        # Use place_option_order with strategyType="CU" and debit_credit="DB"
+        preview = self.preview_option_order(
+            legs=close_legs,
+            limit_price=limit_price,
+            strategy_type="CU",
+            debit_credit="DB",
+            time_in_force=time_in_force,
+            acct_num=acct_num,
+        )
+
+        if dry_run:
+            return preview
+
+        messages = preview.get("messages", [])
+        errors = [m for m in messages if m.get("type") == "error"]
+        if errors:
+            raise ValueError(
+                f"Close preview failed: {errors[0].get('detail', errors[0].get('message'))}"
+            )
+
+        conf_num = preview["verifyDetails"]["orderConfirmDetail"]["confNum"]
+
+        body = self._build_order_payload(
+            legs=close_legs,
+            limit_price=limit_price,
+            strategy_type="CU",
+            debit_credit="DB",
             time_in_force=time_in_force,
             req_type_code="P",
             acct_num=acct_num,
