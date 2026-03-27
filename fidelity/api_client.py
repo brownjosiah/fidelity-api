@@ -122,6 +122,15 @@ class AccountInfo:
     is_retirement: bool = False
 
 
+@dataclass
+class OptionLeg:
+    """A single leg of a multi-leg options order."""
+    symbol: str      # OCC symbol e.g. "SPXW260327P6375"
+    action: str      # "BO" (Buy Open), "SO" (Sell Open), "BC" (Buy Close), "SC" (Sell Close)
+    quantity: int    # number of contracts
+    option_type: str = "O"  # "O" for options
+
+
 class FidelityAPIClient:
     """
     Direct HTTP client for Fidelity's internal REST APIs.
@@ -215,6 +224,12 @@ class FidelityAPIClient:
         """Get headers with CSRF token for protected endpoints."""
         token = self.get_csrf_token()
         return {"X-CSRF-TOKEN": token}
+
+    def _trade_headers(self) -> dict:
+        """Get headers with CSRF token and trade-options Referer."""
+        headers = self._csrf_headers()
+        headers["Referer"] = TRADE_REFERER
+        return headers
 
     def is_session_valid(self) -> bool:
         """Check if the current session cookies are still valid."""
@@ -670,6 +685,74 @@ class FidelityAPIClient:
         resp.raise_for_status()
         return resp.json()
 
+    # --- Options Order Placement ---
+
+    def _build_order_payload(
+        self,
+        legs: list,
+        limit_price: float,
+        strategy_type: str,
+        debit_credit: str,
+        time_in_force: str,
+        req_type_code: str,
+        acct_num: str = None,
+        conf_num: str = None,
+        original_order_id: str = None,
+    ) -> dict:
+        """Build the orderDetails payload for mlo-verify/mlo-confirm.
+
+        Parameters
+        ----------
+        legs : list[OptionLeg]
+        limit_price : float
+        strategy_type : str
+            "CD" (Condor), "SP" (Spread), "ST" (Straddle), "SG" (Strangle).
+        debit_credit : str
+            "CR" (Credit), "DB" (Debit).
+        time_in_force : str
+            "D" (Day), "GTC" (Good Till Cancel).
+        req_type_code : str
+            "N" for verify (preview), "P" for confirm (place).
+        acct_num : str, optional
+        conf_num : str, optional
+            Confirmation number from verify response. Required for confirm.
+        original_order_id : str, optional
+            Original order confNum for replace orders.
+        """
+        acct = self.get_account(acct_num)
+        is_replace = original_order_id is not None
+
+        acct_type_code = "M" if acct.is_margin else "C"
+
+        order = {
+            "acctNum": acct.acct_num,
+            "tif": time_in_force,
+            "netAmount": f"{limit_price:.2f}",
+            "aonCode": False,
+            "acctTypeCode": acct_type_code,
+            "reqTypeCode": req_type_code,
+            "numOfLegs": str(len(legs)),
+            "dbCrEvenCode": debit_credit,
+            "strategyType": strategy_type,
+        }
+
+        if conf_num:
+            order["confNum"] = conf_num
+
+        if original_order_id:
+            order["orderNumOrig"] = original_order_id
+
+        for i, leg in enumerate(legs, 1):
+            qty = str(leg.quantity) if is_replace else leg.quantity
+            order[f"leg{i}"] = {
+                "action": leg.action,
+                "type": leg.option_type,
+                "qty": qty,
+                "symbol": leg.symbol,
+            }
+
+        return {"orderDetails": order}
+
     # --- Convenience methods for iron condor trading ---
 
     def get_ic_chain_data(
@@ -733,3 +816,26 @@ def _parse_int(value: str) -> Optional[int]:
         return int(value.replace(",", ""))
     except (ValueError, TypeError):
         return None
+
+
+def _get_put_call(symbol: str) -> str:
+    """Extract 'P' or 'C' from an OCC option symbol.
+
+    OCC format: SYMBOL + YYMMDD + P/C + strike
+    e.g. SPXW260327P6375 -> 'P', SPXW260327C6390 -> 'C'
+    """
+    match = re.search(r'\d{6}([PC])', symbol)
+    if match:
+        return match.group(1)
+    raise ValueError(f"Cannot parse put/call from symbol: {symbol}")
+
+
+def _action_to_order_action(action: str, symbol: str) -> str:
+    """Convert OptionLeg action + symbol to net-debit-credit orderAction code.
+
+    Maps buy/sell direction + put/call type to: BP, SP, BC, SC.
+    Note: BC = Buy Call, SC = Sell Call (direction + type, NOT open/close).
+    """
+    direction = action[0]  # 'B' or 'S'
+    put_call = _get_put_call(symbol)  # 'P' or 'C'
+    return direction + put_call
