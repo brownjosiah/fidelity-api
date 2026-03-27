@@ -68,6 +68,15 @@ ENDPOINTS = {
     "trade_config": "/ftgw/digital/trade-options/api/config",
     "trade_account_fusion": "/ftgw/digital/trade-options/api/account-fusion",
     "trade_autosuggest": "/ftgw/digital/trade-options/api/autosuggest",
+    # Multi-leg order endpoints (csrf + cookie)
+    "mlo_verify": "/ftgw/digital/trade-options/api/mlo-verify",
+    "mlo_confirm": "/ftgw/digital/trade-options/api/mlo-confirm",
+    "mlo_verify_replace": "/ftgw/digital/trade-options/api/mlo-verify-replace",
+    "mlo_confirm_replace": "/ftgw/digital/trade-options/api/mlo-confirm-replace",
+    "trade_orders": "/ftgw/digital/trade-options/api/orders",
+    "trade_quotes": "/ftgw/digital/trade-options/api/quotes",
+    "net_debit_credit": "/ftgw/digital/trade-options/api/net-debit-credit",
+    "max_gain_loss": "/ftgw/digital/trade-options/api/max-gain-loss",
     # Account context
     "account_context": "/ftgw/digital/pico/api/v1/context/account",
     # Alternate quote source (traderplus)
@@ -83,6 +92,18 @@ DEFAULT_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:128.0) Gecko/20100101 Firefox/128.0",
     "Origin": "https://digital.fidelity.com",
     "Referer": "https://digital.fidelity.com/ftgw/digital/options-research/",
+}
+
+# Referer header override for trade-options endpoints
+TRADE_REFERER = "https://digital.fidelity.com/ftgw/digital/trade-options"
+
+# Action code mappings
+# Short-form (verify/confirm payloads) -> long-form (max-gain-loss endpoint)
+ACTION_TO_LONG_FORM = {
+    "BO": "BOPEN",
+    "SO": "SOPEN",
+    "BC": "BCLOSE",
+    "SC": "SCLOSE",
 }
 
 
