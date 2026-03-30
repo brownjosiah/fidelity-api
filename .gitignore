@@ -2,7 +2,7 @@
 *.bat
 
 # Fidelity session data (contains auth cookies, account info)
-Fidelity_*.json
+Fidelity*.json
 api_captures/
 options_chain_selectors.json
 options_chain_screenshot.png
