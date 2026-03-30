@@ -104,6 +104,9 @@ ENDPOINTS = {
     "equity_place": "/ftgw/digital/trade-equity/placeOrder",
     "equity_quote": "/ftgw/digital/trade-equity/getquote",
     "equity_commission": "/ftgw/digital/trade-equity/commissioncalculator",
+    # Cancel endpoints (used for BOTH equity and options orders)
+    "cancel_preview": "/ftgw/digital/trade-equity/cancelPreviewOrder",
+    "cancel_place": "/ftgw/digital/trade-equity/cancelPlaceOrder",
     # Account context
     "account_context": "/ftgw/digital/pico/api/v1/context/account",
     # Alternate quote source (traderplus)
@@ -1474,6 +1477,53 @@ class FidelityAPIClient:
 
         url = BASE_URL + ENDPOINTS["equity_place"]
         headers = self._equity_headers()
+        resp = self.session.post(url, json=body, headers=headers)
+        resp.raise_for_status()
+        return resp.json()
+
+    # --- Order Cancel (works for both equity and options) ---
+
+    def cancel_order(
+        self,
+        order_id: str,
+        acct_num: str = None,
+        dry_run: bool = True,
+    ) -> dict:
+        """Cancel an open order (equity or options).
+
+        Uses the trade-equity cancel endpoints which handle both equity
+        and multi-leg options orders.
+
+        Parameters
+        ----------
+        order_id : str
+            The confirmation number (confNum) of the order to cancel.
+        acct_num : str, optional
+            Account number. Uses default account if not provided.
+        dry_run : bool
+            If True (default), only previews the cancel. If False, executes it.
+
+        Returns
+        -------
+        dict with key 'preview' (if dry_run) or 'place' (if live), containing
+        cancelConfirmDetail with respTypeCode, confNum, origQty, execQty,
+        remainingQty.
+        """
+        acct = self.get_account(acct_num)
+        body = {"cancelOrderDetails": {"acctNum": acct.acct_num, "confNum": order_id}}
+        headers = self._equity_headers()
+
+        # Phase 1: Preview cancel
+        url = BASE_URL + ENDPOINTS["cancel_preview"]
+        resp = self.session.post(url, json=body, headers=headers)
+        resp.raise_for_status()
+        preview = resp.json()
+
+        if dry_run:
+            return preview
+
+        # Phase 2: Execute cancel
+        url = BASE_URL + ENDPOINTS["cancel_place"]
         resp = self.session.post(url, json=body, headers=headers)
         resp.raise_for_status()
         return resp.json()
