@@ -8,12 +8,19 @@ Auth model:
   - Login via Playwright (FidelityAutomation) to get session cookies
   - Extract cookies from Playwright's storage_state
   - Data endpoints (slo-chain, quotes): cookie-only auth
-  - Trading endpoints (balances, positions): CSRF + cookie auth
-  - CSRF token from GET /prgw/digital/research/api/tokens
+  - Trade-options endpoints (mlo-verify, balances, positions): CSRF + cookie
+    - CSRF token from GET /prgw/digital/research/api/tokens
+  - Trade-equity endpoints (previewSrvc, placeOrder): different CSRF + cookie
+    - CSRF token derived from _brkg.ap122489.equitytradeticket.csrf cookie
+      using the csrf npm package algorithm: salt + "-" + base64url(sha1(salt + "-" + secret))
+    - Each Fidelity frontend app runs its own csurf middleware with its own secret
+
+  Important: trade-options and trade-equity use DIFFERENT CSRF mechanisms.
+  Use _trade_headers() for options, _equity_headers() for equity.
 
 Usage:
     from fidelity.fidelity import FidelityAutomation
-    from fidelity.api_client import FidelityAPIClient
+    from fidelity.api_client import FidelityAPIClient, OptionLeg
 
     # Login via browser
     fid = FidelityAutomation(headless=True, save_state=True)
@@ -31,9 +38,21 @@ Usage:
     spx_price = client.get_quote(".SPX")
     vix_price = client.get_quote(".VIX")
 
-    # Get account balances (requires CSRF)
+    # Get account balances
     balances = client.get_balances()
     print(f"Account value: ${balances['totalAcctVal']}")
+
+    # Preview an iron condor (safe, no order placed)
+    legs = [
+        OptionLeg("SPXW260327P6360", "BO", 1),
+        OptionLeg("SPXW260327P6365", "SO", 1),
+        OptionLeg("SPXW260327C6385", "SO", 1),
+        OptionLeg("SPXW260327C6390", "BO", 1),
+    ]
+    preview = client.place_option_order(legs, 2.00, dry_run=True)
+
+    # Place an equity order (dry_run=False to actually place)
+    result = client.place_equity_order("AAPL", "B", 1, price_type="M", dry_run=True)
 """
 
 import hashlib
