@@ -107,6 +107,8 @@ ENDPOINTS = {
     # Cancel endpoints (used for BOTH equity and options orders)
     "cancel_preview": "/ftgw/digital/trade-equity/cancelPreviewOrder",
     "cancel_place": "/ftgw/digital/trade-equity/cancelPlaceOrder",
+    # Order history / activity
+    "webactivity_graphql": "/ftgw/digital/webactivity/api/graphql",
     # Account context
     "account_context": "/ftgw/digital/pico/api/v1/context/account",
     # Alternate quote source (traderplus)
@@ -1527,6 +1529,107 @@ class FidelityAPIClient:
         resp = self.session.post(url, json=body, headers=headers)
         resp.raise_for_status()
         return resp.json()
+
+    # --- Order History ---
+
+    def get_order_history(self, days: int = 30, acct_num: str = None) -> list[dict]:
+        """Get recent order history (open, filled, cancelled).
+
+        Uses the webactivity GraphQL API to fetch orders across
+        all order types (equity, options, mutual funds).
+
+        Parameters
+        ----------
+        days : int
+            Number of days of history to fetch. Default 30.
+        acct_num : str, optional
+            Account number. Uses default account if not provided.
+
+        Returns
+        -------
+        list of order dicts, each with keys: acctNum, description, date,
+        status, symbol, confNumOrig, cancelableInd, replaceableInd,
+        actionCode, orderDate, detailItems, etc.
+        """
+        acct = self.get_account(acct_num)
+
+        now = int(time.time())
+        from_ts = now - (days * 86400)
+
+        query = """query getTransactions($acctIdList: String, $acctDetailList: [AcctDetailList], $searchCriteriaDetail: SearchCriteriaDetail, $isNewOrderApi: Boolean! = false, $isSupportCrypto: Boolean! = false, $hideDCOrders: Boolean! = true) {
+  getTransactions(
+    acctIdList: $acctIdList
+    acctDetailList: $acctDetailList
+    searchCriteriaDetail: $searchCriteriaDetail
+    isNewOrderApi: $isNewOrderApi
+    isSupportCrypto: $isSupportCrypto
+    hideDCOrders: $hideDCOrders
+  ) {
+    orders {
+      acctNum
+      acctName
+      description
+      date
+      amount
+      confNumOrig
+      actionCode
+      status
+      symbol
+      secType
+      briefSymbol
+      cancelableInd
+      replaceableInd
+      orderDate
+      detailItems {
+        key
+        displayKeyName
+        value
+      }
+      isOption
+      qtyExec
+      dbCrEvenIndicator
+    }
+  }
+}"""
+
+        body = {
+            "operationName": "getTransactions",
+            "variables": {
+                "isNewOrderApi": True,
+                "isSupportCrypto": True,
+                "hideDCOrders": False,
+                "searchCriteriaDetail": {
+                    "timePeriod": days,
+                    "txnCat": None,
+                    "viewType": "NON_CORE",
+                    "histSortDir": "D",
+                    "acctHistSort": "DATE",
+                    "hasBasketName": True,
+                    "txnFromDate": str(from_ts),
+                    "txnToDate": str(now),
+                },
+                "acctIdList": acct.acct_num,
+                "acctDetailList": [
+                    {
+                        "acctNum": acct.acct_num,
+                        "acctType": acct.acct_type,
+                        "acctSubType": acct.acct_sub_type,
+                        "acctSubTypeDesc": acct.acct_sub_type_desc,
+                        "name": acct.name,
+                        "regTypeDesc": acct.reg_type_desc,
+                        "isTradable": True,
+                    }
+                ],
+            },
+            "query": query,
+        }
+
+        url = BASE_URL + ENDPOINTS["webactivity_graphql"]
+        resp = self.session.post(url, json=body)
+        resp.raise_for_status()
+        data = resp.json()
+
+        return data.get("data", {}).get("getTransactions", {}).get("orders", [])
 
     # --- Convenience methods for iron condor trading ---
 
