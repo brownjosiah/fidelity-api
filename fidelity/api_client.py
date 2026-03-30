@@ -392,18 +392,13 @@ class FidelityAPIClient:
 
     def get_0dte_expiration(self, symbol: str = ".SPX") -> Optional[str]:
         """
-        Get today's 0DTE expiration date string (MM/DD/YYYY format).
+        Get today's 0DTE expiration date string.
 
-        Returns None if no 0DTE expiration available today.
+        Returns the date in whatever format the expirations API provides
+        (currently YYYY-MM-DD). Returns None if no expiration available today.
         """
         expirations = self.get_option_expirations(symbol)
-        for exp in expirations:
-            if exp.get("daysToExpiration") == "0" or str(exp.get("daysToExpiration")) == "0":
-                return exp.get("date", "")
-            # Also check the key field which may have today's date
-            if exp.get("key", "").startswith("0|"):
-                return exp.get("date", "")
-        # Fallback: find the earliest expiration
+        # The earliest expiration is today's 0DTE (or the next available)
         if expirations:
             return expirations[0].get("date", "")
         return None
@@ -413,7 +408,6 @@ class FidelityAPIClient:
         symbol: str = "SPX",
         expiration_dates: list[str] = None,
         strikes: str = "All",
-        settlement_types: str = "",
     ) -> list[dict]:
         """
         Get the full option chain with Greeks.
@@ -423,12 +417,10 @@ class FidelityAPIClient:
         symbol : str
             Underlying symbol (e.g., "SPX").
         expiration_dates : list[str], optional
-            List of expiration dates in "MM/DD/YYYY" format.
+            List of expiration dates (YYYY-MM-DD or MM/DD/YYYY).
             If None, uses 0DTE expiration.
         strikes : str
             Number of strikes or "All" for full chain. Default "All".
-        settlement_types : str
-            Settlement type filter. Empty string for all.
 
         Returns
         -------
@@ -444,26 +436,64 @@ class FidelityAPIClient:
             putImpliedVolatility, putVolume, putOpenInterest: str
             putSelection: str (OCC symbol, e.g., "-SPXW260313P6650")
         """
+        # Fetch all expirations to build settlementTypes param
+        dotted = f".{symbol}" if not symbol.startswith(".") else symbol
+        all_expirations = self.get_option_expirations(dotted)
+
+        # Build a lookup: date -> expiration metadata
+        exp_lookup = {e["date"]: e for e in all_expirations}
+
         if expiration_dates is None:
-            # Get 0DTE by default
-            exp = self.get_0dte_expiration(f".{symbol}" if not symbol.startswith(".") else symbol)
-            if exp:
-                expiration_dates = [exp]
+            if all_expirations:
+                expiration_dates = [all_expirations[0]["date"]]
             else:
                 expiration_dates = []
 
-        # Format dates as comma-separated MM/DD/YYYY
-        dates_param = ",".join(expiration_dates)
+        # Convert dates to MM/DD/YYYY and build settlementTypes
+        formatted_dates = []
+        settlement_parts = []
+        for date_str in expiration_dates:
+            # Normalize to MM/DD/YYYY
+            if "-" in date_str:
+                # YYYY-MM-DD -> MM/DD/YYYY
+                parts = date_str.split("-")
+                mm_dd_yyyy = f"{parts[1]}/{parts[2]}/{parts[0]}"
+            else:
+                mm_dd_yyyy = date_str
+
+            formatted_dates.append(mm_dd_yyyy)
+
+            # Build settlement type: "Mon DD YYYYsetType|periodicity"
+            # e.g., "Mar 30 2026P|W"
+            exp_meta = exp_lookup.get(date_str)
+            if exp_meta:
+                # Parse date for month name
+                if "-" in date_str:
+                    y, m, d = date_str.split("-")
+                else:
+                    m, d, y = mm_dd_yyyy.split("/")
+
+                month_names = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                               "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+                mon = month_names[int(m) - 1]
+                set_type = exp_meta.get("setType", "P")
+                periodicity = exp_meta.get("optionPeriodicity", "W")
+                settlement_parts.append(f"{mon} {d.zfill(2)} {y}{set_type}|{periodicity}")
+
+        dates_param = ",".join(formatted_dates)
+        settlement_param = ",".join(settlement_parts)
+
+        # Strip leading dot from symbol for the query param
+        clean_symbol = symbol.lstrip(".")
 
         url = BASE_URL + ENDPOINTS["slo_chain"]
         params = {
             "strikes": strikes,
             "expirationDates": dates_param,
-            "settlementTypes": settlement_types,
+            "settlementTypes": settlement_param,
+            "symbol": clean_symbol,
+            "adjustedOptionsData": "true",
         }
-        # Add symbol to URL path if not SPX default
-        if symbol and symbol.upper() not in ("SPX", ".SPX"):
-            params["underlying"] = symbol
 
         resp = self.session.get(url, params=params)
         resp.raise_for_status()
