@@ -231,6 +231,45 @@ class FidelityAPIClient:
 
         return cls(cookies)
 
+    @classmethod
+    def from_secrets_manager(
+        cls,
+        headless: bool = True,
+        region: str = "us-east-1",
+        profile: str = "personal",
+    ) -> "FidelityAPIClient":
+        """Create an API client by logging in with credentials from AWS Secrets Manager.
+
+        Pulls username, password, and TOTP secret from SM, launches a headless
+        Playwright browser, logs in, extracts cookies, and returns a ready client
+        with auto-refresh enabled.
+
+        Parameters
+        ----------
+        headless : bool
+            Run browser headless (default True).
+        region : str
+            AWS region for Secrets Manager.
+        profile : str
+            AWS CLI profile name.
+
+        Returns
+        -------
+        FidelityAPIClient with auto-refresh configured.
+        """
+        from fidelity.credentials import login_and_create_client
+
+        client, automation = login_and_create_client(
+            headless=headless, region=region, profile=profile,
+        )
+        # Store refresh config for auto_refresh()
+        client._sm_region = region
+        client._sm_profile = profile
+        client._sm_headless = headless
+        # Close the browser — we only needed it for cookies
+        automation.close_browser()
+        return client
+
     # --- Session management ---
 
     def refresh_cookies(self, automation):
@@ -240,6 +279,42 @@ class FidelityAPIClient:
                 cookie["name"], cookie["value"], domain=".fidelity.com"
             )
         self._csrf_token = None  # Force re-fetch
+
+    def auto_refresh(self) -> bool:
+        """Re-login via Playwright using AWS Secrets Manager credentials.
+
+        Only works if the client was created via from_secrets_manager() or
+        if _sm_region and _sm_profile are set.
+
+        Returns True if refresh succeeded, False otherwise.
+        """
+        region = getattr(self, "_sm_region", None)
+        profile = getattr(self, "_sm_profile", None)
+        headless = getattr(self, "_sm_headless", True)
+
+        if not region or not profile:
+            raise RuntimeError(
+                "auto_refresh requires SM config. Use FidelityAPIClient.from_secrets_manager() "
+                "or set _sm_region and _sm_profile manually."
+            )
+
+        from fidelity.credentials import login_and_create_client
+
+        try:
+            new_client, automation = login_and_create_client(
+                headless=headless, region=region, profile=profile,
+            )
+            # Transfer fresh cookies to this session
+            self.session.cookies.clear()
+            for cookie_name, cookie_val in new_client.session.cookies.items():
+                self.session.cookies.set(cookie_name, cookie_val, domain=".fidelity.com")
+            self._csrf_token = None
+            self._accounts = []
+            self._account_info = None
+            automation.close_browser()
+            return True
+        except Exception:
+            return False
 
     def get_csrf_token(self) -> str:
         """Fetch a CSRF token from Fidelity's token endpoint."""
