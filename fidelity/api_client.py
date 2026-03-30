@@ -36,7 +36,10 @@ Usage:
     print(f"Account value: ${balances['totalAcctVal']}")
 """
 
+import hashlib
+import base64
 import json
+import secrets
 import time
 import re
 from dataclasses import dataclass, field
@@ -77,6 +80,11 @@ ENDPOINTS = {
     "trade_quotes": "/ftgw/digital/trade-options/api/quotes",
     "net_debit_credit": "/ftgw/digital/trade-options/api/net-debit-credit",
     "max_gain_loss": "/ftgw/digital/trade-options/api/max-gain-loss",
+    # Equity trade endpoints (cookie auth)
+    "equity_preview": "/ftgw/digital/trade-equity/previewSrvc",
+    "equity_place": "/ftgw/digital/trade-equity/placeOrder",
+    "equity_quote": "/ftgw/digital/trade-equity/getquote",
+    "equity_commission": "/ftgw/digital/trade-equity/commissioncalculator",
     # Account context
     "account_context": "/ftgw/digital/pico/api/v1/context/account",
     # Alternate quote source (traderplus)
@@ -94,8 +102,9 @@ DEFAULT_HEADERS = {
     "Referer": "https://digital.fidelity.com/ftgw/digital/options-research/",
 }
 
-# Referer header override for trade-options endpoints
+# Referer header overrides for trade endpoints
 TRADE_REFERER = "https://digital.fidelity.com/ftgw/digital/trade-options"
+EQUITY_REFERER = "https://digital.fidelity.com/ftgw/digital/trade-equity/index/orderEntry"
 
 # Action code mappings
 # Short-form (verify/confirm payloads) -> long-form (max-gain-loss endpoint)
@@ -230,6 +239,45 @@ class FidelityAPIClient:
         headers = self._csrf_headers()
         headers["Referer"] = TRADE_REFERER
         return headers
+
+    def _equity_headers(self) -> dict:
+        """Get headers with equity CSRF token and Referer.
+
+        The equity trade app uses a different CSRF mechanism than trade-options.
+        The token is derived from the _brkg.ap122489.equitytradeticket.csrf
+        cookie using the standard csrf npm package algorithm:
+        token = salt + "-" + base64url(sha1(salt + "-" + secret))
+        """
+        # Find the equity CSRF secret cookie
+        secret = None
+        for cookie in self.session.cookies:
+            if "equitytradeticket.csrf" in cookie.name:
+                secret = cookie.value
+                break
+
+        if not secret:
+            # Fallback: try loading the equity page to set the cookie
+            self.session.get(
+                BASE_URL + "/ftgw/digital/trade-equity/index/orderEntry"
+            )
+            for cookie in self.session.cookies:
+                if "equitytradeticket.csrf" in cookie.name:
+                    secret = cookie.value
+                    break
+
+        if not secret:
+            raise ValueError("Cannot find equity CSRF cookie. Session may be expired.")
+
+        # Generate token: salt + "-" + base64url(sha1(salt + "-" + secret))
+        salt = secrets.token_urlsafe(8)[:8]
+        hash_bytes = hashlib.sha1(f"{salt}-{secret}".encode("ascii")).digest()
+        hash_b64 = base64.urlsafe_b64encode(hash_bytes).decode().rstrip("=")
+        token = f"{salt}-{hash_b64}"
+
+        return {
+            "X-CSRF-TOKEN": token,
+            "Referer": EQUITY_REFERER,
+        }
 
     def is_session_valid(self) -> bool:
         """Check if the current session cookies are still valid."""
@@ -1242,6 +1290,172 @@ class FidelityAPIClient:
 
         url = BASE_URL + ENDPOINTS["mlo_confirm_replace"]
         resp = self.session.post(url, json=confirm_body, headers=headers)
+        resp.raise_for_status()
+        return resp.json()
+
+    # --- Equity Trading ---
+
+    def preview_equity_order(
+        self,
+        symbol: str,
+        action: str,
+        quantity: int,
+        price_type: str = "M",
+        limit_price: float = None,
+        stop_price: float = None,
+        time_in_force: str = "D",
+        acct_num: str = None,
+    ) -> dict:
+        """Preview an equity order without placing it.
+
+        Parameters
+        ----------
+        symbol : str
+            Stock ticker (e.g., "AAPL").
+        action : str
+            "B" (Buy) or "S" (Sell).
+        quantity : int
+            Number of shares.
+        price_type : str
+            "M" (Market), "L" (Limit), "SL" (Stop Limit), "ST" (Stop).
+        limit_price : float, optional
+            Required for Limit and Stop Limit orders.
+        stop_price : float, optional
+            Required for Stop and Stop Limit orders.
+        time_in_force : str
+            "D" (Day) or "GTC" (Good Till Cancel).
+        acct_num : str, optional
+
+        Returns
+        -------
+        dict with key 'preview' containing confNum, priceDetail, estCommission, etc.
+        """
+        acct = self.get_account(acct_num)
+        acct_type_code = "M" if acct.is_margin else "C"
+
+        body = {
+            "orderDetails": {
+                "orderAction": action.upper(),
+                "orderActionCode": action.upper(),
+                "priceTypeCode": price_type,
+                "qty": quantity,
+                "limitPrice": limit_price,
+                "tifCode": time_in_force,
+                "acctNum": acct.acct_num,
+                "acctName": acct.name,
+                "qtyTypeCode": "S",
+                "symbol": symbol.upper(),
+                "stopPrice": stop_price,
+                "condition": "N",
+                "acctTypeCode": acct_type_code,
+                "isTradeTypeAvailable": True,
+                "previewInd": True,
+                "confInd": True,
+                "routeCode": None,
+            }
+        }
+
+        url = BASE_URL + ENDPOINTS["equity_preview"]
+        headers = self._equity_headers()
+        resp = self.session.post(url, json=body, headers=headers)
+        resp.raise_for_status()
+        return resp.json()
+
+    def place_equity_order(
+        self,
+        symbol: str,
+        action: str,
+        quantity: int,
+        price_type: str = "M",
+        limit_price: float = None,
+        stop_price: float = None,
+        time_in_force: str = "D",
+        acct_num: str = None,
+        dry_run: bool = True,
+    ) -> dict:
+        """Preview and optionally place an equity order.
+
+        Parameters
+        ----------
+        symbol : str
+            Stock ticker (e.g., "AAPL").
+        action : str
+            "B" (Buy) or "S" (Sell).
+        quantity : int
+            Number of shares.
+        price_type : str
+            "M" (Market), "L" (Limit), "SL" (Stop Limit), "ST" (Stop).
+        limit_price : float, optional
+            Required for Limit and Stop Limit orders.
+        stop_price : float, optional
+            Required for Stop and Stop Limit orders.
+        time_in_force : str
+            "D" (Day) or "GTC" (Good Till Cancel).
+        acct_num : str, optional
+        dry_run : bool
+            If True (default), only previews. If False, places the order.
+
+        Returns
+        -------
+        dict: Preview result (if dry_run) or placement result (if live).
+        """
+        preview = self.preview_equity_order(
+            symbol=symbol,
+            action=action,
+            quantity=quantity,
+            price_type=price_type,
+            limit_price=limit_price,
+            stop_price=stop_price,
+            time_in_force=time_in_force,
+            acct_num=acct_num,
+        )
+
+        if dry_run:
+            return preview
+
+        # Check for errors
+        preview_data = preview.get("preview", {})
+        msgs = preview_data.get("orderConfirmMsgs", {}).get("orderConfirmMessage", [])
+        errors = [m for m in msgs if m.get("type") == "error"]
+        if errors:
+            raise ValueError(
+                f"Equity order preview failed: {errors[0].get('detail', errors[0].get('message'))}"
+            )
+
+        # Extract confNum and place
+        conf_num = preview_data.get("orderConfirmDetail", {}).get("confNum", "")
+        if not conf_num:
+            raise ValueError("No confirmation number returned from preview")
+
+        acct = self.get_account(acct_num)
+        acct_type_code = "M" if acct.is_margin else "C"
+
+        body = {
+            "orderDetails": {
+                "orderAction": action.upper(),
+                "orderActionCode": action.upper(),
+                "priceTypeCode": price_type,
+                "qty": quantity,
+                "limitPrice": limit_price,
+                "tifCode": time_in_force,
+                "acctNum": acct.acct_num,
+                "acctName": acct.name,
+                "qtyTypeCode": "S",
+                "symbol": symbol.upper(),
+                "stopPrice": stop_price,
+                "condition": "N",
+                "acctTypeCode": acct_type_code,
+                "isTradeTypeAvailable": True,
+                "previewInd": True,
+                "confInd": True,
+                "routeCode": None,
+                "confNum": conf_num,
+            }
+        }
+
+        url = BASE_URL + ENDPOINTS["equity_place"]
+        headers = self._equity_headers()
+        resp = self.session.post(url, json=body, headers=headers)
         resp.raise_for_status()
         return resp.json()
 
